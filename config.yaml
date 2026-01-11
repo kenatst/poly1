@@ -1,0 +1,51 @@
+trading_mode: simulation
+allowlist_markets: []
+top_n_by_volume: 200
+
+data_poll_sec: 5
+health_check_sec: 30
+
+polymarket:
+  rest_base_url: ""
+  ws_url: ""
+  api_key: ""
+  api_secret: ""
+  api_passphrase: ""
+  wallet_signer_mode: external
+  private_key: ""
+  wallet_signer_url: ""
+  wallet_public_key: ""
+
+detector:
+  volume_windows_sec: [60, 300]
+  baseline_window_sec: 1800
+  churn_window_sec: 300
+  repeat_print_window_sec: 120
+  spread_window_sec: 300
+  imbalance_depth_levels: 5
+
+strategy:
+  anomaly_threshold: 0.75
+  min_impact_per_volume: 0.002
+  take_profit_bps: 40
+  stop_loss_bps: 25
+  time_stop_min: 10
+
+execution:
+  order_size_default: 10.0
+  order_size_percent_wallet: null
+  wallet_balance_override: null
+  rate_limit_per_minute: 30
+  retry_attempts: 3
+  retry_backoff_sec: 0.5
+
+risk:
+  max_position_per_market: 100.0
+  max_global_exposure: 500.0
+  max_daily_loss: 50.0
+  max_orders_per_minute: 20
+
+alerts:
+  discord_webhook_url: ""
+  throttle_sec: 15
+  batch_size: 5
