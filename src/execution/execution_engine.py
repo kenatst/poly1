@@ -87,7 +87,7 @@ class ExecutionEngine:
         if self.wallet_signer is None:
             raise ValueError("Live trading requires a wallet signer")
         url = f"{self.rest_base_url}/orders/{order_id}"
-        signer_headers = self.wallet_signer.sign({\"order_id\": order_id}).headers
+        signer_headers = self.wallet_signer.sign({"order_id": order_id}).headers
         headers = {**self._headers(), **signer_headers}
         response = self.session.delete(url, headers=headers, timeout=10)
         self.requests_sent += 1
