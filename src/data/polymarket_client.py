@@ -70,13 +70,27 @@ class PolymarketClient:
         response = self.session.get(url, headers=self._headers(), params={"limit": limit}, timeout=10)
         response.raise_for_status()
         data = response.json()
+        
+        # Handle different response formats (list vs dict with 'markets' key)
+        if isinstance(data, dict):
+            items = data.get("markets", [])
+            # if 'markets' not found, and it's a dict, maybe it's not a list of markets
+            if not items and not isinstance(items, list):
+                items = [data] # assume single market object
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+
         markets = []
-        for item in data.get("markets", data):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
             markets.append(
                 Market(
-                    market_id=str(item.get("id") or item.get("market_id")),
-                    title=item.get("title", ""),
-                    status=item.get("status", ""),
+                    market_id=str(item.get("id") or item.get("condition_id") or item.get("market_id")),
+                    title=item.get("title", item.get("question", "")),
+                    status=item.get("status", "active"),
                     volume=float(item.get("volume", 0)),
                 )
             )
@@ -100,9 +114,19 @@ class PolymarketClient:
         url = f"{self.rest_base_url}/markets/{market_id}/trades"
         response = self.session.get(url, headers=self._headers(), params={"limit": limit}, timeout=10)
         response.raise_for_status()
-        payload = response.json()
+        data = response.json()
+        
+        if isinstance(data, dict):
+            items = data.get("trades", [])
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+
         trades = []
-        for item in payload.get("trades", payload):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
             timestamp = item.get("timestamp") or item.get("time")
             if isinstance(timestamp, (int, float)):
                 ts = datetime.fromtimestamp(timestamp, tz=timezone.utc)
