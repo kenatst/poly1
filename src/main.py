@@ -1,7 +1,7 @@
 import json
 import time
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from src.alerts.discord_alerter import DiscordAlerter
 from src.config import load_config
@@ -15,7 +15,7 @@ from src.risk.risk_manager import RiskManager
 from src.strategy.fade_strategy import FadeStrategy
 
 
-def _select_markets(client: PolymarketClient, allowlist: List[str], top_n: int | None) -> List[str]:
+def _select_markets(client: PolymarketClient, allowlist: List[str], top_n: Optional[int]) -> List[str]:
     if allowlist:
         return allowlist
     markets = client.list_markets(limit=top_n or 200)
@@ -43,7 +43,7 @@ def _short_move(detector: AnomalyDetector, market: str, window_sec: int = 60) ->
     return history[-1] - history[0]
 
 
-def _build_wallet_signer(mode: str, polymarket_config) -> WalletSigner | None:
+def _build_wallet_signer(mode: str, polymarket_config) -> Optional[WalletSigner]:
     if mode == "external":
         if not polymarket_config.wallet_signer_url:
             return None
