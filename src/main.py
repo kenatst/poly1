@@ -10,6 +10,7 @@ from src.data.storage import OrderBookSnapshot, SignalRecord, SqliteStorage, Tra
 from src.execution.execution_engine import ExecutionEngine
 from src.execution.wallet_signer import ExternalWalletSigner, PrivateKeyEnvSigner, WalletSigner
 from src.features.anomaly_detector import AnomalyDetector, OrderBookView
+from src.data.polymarket_client import TradePrint, OrderBook
 from src.risk.risk_manager import RiskManager
 from src.strategy.fade_strategy import FadeStrategy
 
@@ -73,6 +74,7 @@ def run() -> None:
 
     client = PolymarketClient(
         rest_base_url=config.polymarket.rest_base_url,
+        ws_url=config.polymarket.ws_url,
         api_key=config.polymarket.api_key,
         api_secret=config.polymarket.api_secret,
         api_passphrase=config.polymarket.api_passphrase,
@@ -93,6 +95,7 @@ def run() -> None:
         take_profit_bps=config.strategy.take_profit_bps,
         stop_loss_bps=config.strategy.stop_loss_bps,
         time_stop_min=config.strategy.time_stop_min,
+        atr_window=config.strategy.atr_window,
     )
 
     wallet_signer = _build_wallet_signer(config.polymarket.wallet_signer_mode, config.polymarket)
@@ -126,87 +129,99 @@ def run() -> None:
     alerter.enqueue("HEALTH", {"event": "startup", "markets": markets, "mode": config.trading_mode})
     alerter.flush()
 
-    while True:
-        for market in markets:
-            orderbook_payload = client.get_orderbook(market)
-            orderbook_view = _parse_orderbook({"bids": orderbook_payload.bids, "asks": orderbook_payload.asks})
-            trades = client.get_recent_trades(market)
-            trade_models = [
-                Trade(
-                    market=market,
-                    trade_id=trade.trade_id,
-                    price=trade.price,
-                    size=trade.size,
-                    side=trade.side,
-                    timestamp=trade.timestamp,
-                )
-                for trade in trades
-            ]
-            storage.insert_trades(trade_models)
-            storage.insert_orderbook(
-                OrderBookSnapshot(
-                    market=market,
-                    timestamp=orderbook_payload.timestamp,
-                    bids=json.dumps(orderbook_payload.bids),
-                    asks=json.dumps(orderbook_payload.asks),
-                )
-            )
+    def on_trade(trade: TradePrint):
+        trade_model = Trade(
+            market=trade.market_id,
+            trade_id=trade.trade_id,
+            price=trade.price,
+            size=trade.size,
+            side=trade.side,
+            timestamp=trade.timestamp,
+        )
+        storage.insert_trades([trade_model])
+        detector.update(trade.market_id, [trade_model], detector.last_orderbook.get(trade.market_id))
 
-            detector.update(market, trade_models, orderbook_view)
-            score, features = detector.score(market, orderbook_view)
-            short_move = _short_move(detector, market)
-            signal = strategy.generate_signal(
-                market=market,
-                mid=orderbook_view.mid,
-                short_move=short_move,
-                score=score,
-                features=features,
-                order_size=order_size,
+    def on_orderbook(ob: OrderBook):
+        storage.insert_orderbook(
+            OrderBookSnapshot(
+                market=ob.market_id,
+                timestamp=ob.timestamp,
+                bids=json.dumps(ob.bids),
+                asks=json.dumps(ob.asks),
             )
+        )
+        view = _parse_orderbook({"bids": ob.bids, "asks": ob.asks})
+        detector.update(ob.market_id, [], view)
 
-            storage.insert_signal(
-                SignalRecord(
+    # Initialize detector last_orderbook if not present
+    if not hasattr(detector, "last_orderbook"):
+        detector.last_orderbook = {}
+
+    client.start_ws(markets, on_trade=on_trade, on_orderbook=on_orderbook)
+
+    try:
+        while True:
+            for market in markets:
+                orderbook_view = detector.last_orderbook.get(market)
+                if not orderbook_view:
+                    continue
+
+                score, features = detector.score(market, orderbook_view)
+                short_move = _short_move(detector, market)
+                signal = strategy.generate_signal(
                     market=market,
-                    timestamp=datetime.now(timezone.utc),
+                    mid=orderbook_view.mid,
+                    short_move=short_move,
                     score=score,
-                    payload=json.dumps(features),
+                    features=features,
+                    order_size=order_size,
                 )
-            )
 
-            if signal:
-                alerter.enqueue(
-                    "SIGNAL",
-                    {
-                        "market": signal.market,
-                        "side": signal.side,
-                        "price": signal.price,
-                        "score": signal.score,
-                        "features": signal.features,
-                    },
+                storage.insert_signal(
+                    SignalRecord(
+                        market=market,
+                        timestamp=datetime.now(timezone.utc),
+                        score=score,
+                        payload=json.dumps(features),
+                    )
                 )
-                if risk.check_order(signal.market, signal.size, signal.price):
-                    payload = {
-                        "market": signal.market,
-                        "side": signal.side,
-                        "price": signal.price,
-                        "size": signal.size,
-                        "type": "limit",
-                    }
-                    order_response = execution.place_order(payload)
-                    risk.record_order()
+
+                if signal:
                     alerter.enqueue(
-                        "ORDER",
+                        "SIGNAL",
                         {
                             "market": signal.market,
-                            "order_id": order_response.order_id,
-                            "status": order_response.status,
-                            "payload": order_response.payload,
+                            "side": signal.side,
+                            "price": signal.price,
+                            "score": signal.score,
+                            "features": signal.features,
                         },
                     )
-                else:
-                    alerter.enqueue("RISK", {"market": signal.market, "reason": "risk_block"})
-            alerter.flush()
-        time.sleep(config.data_poll_sec)
+                    if risk.check_order(signal.market, signal.size, signal.price):
+                        payload = {
+                            "market": signal.market,
+                            "side": signal.side,
+                            "price": signal.price,
+                            "size": signal.size,
+                            "type": "limit",
+                        }
+                        order_response = execution.place_order(payload)
+                        risk.record_order()
+                        alerter.enqueue(
+                            "ORDER",
+                            {
+                                "market": signal.market,
+                                "order_id": order_response.order_id,
+                                "status": order_response.status,
+                                "payload": order_response.payload,
+                            },
+                        )
+                    else:
+                        alerter.enqueue("RISK", {"market": signal.market, "reason": "risk_block"})
+                alerter.flush()
+            time.sleep(config.data_poll_sec)
+    finally:
+        client.stop_ws()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ class StrategyConfig:
     take_profit_bps: int
     stop_loss_bps: int
     time_stop_min: int
+    atr_window: int
 
 
 @dataclass
@@ -142,6 +143,7 @@ def load_config(path: str) -> AppConfig:
         take_profit_bps=_env_int("TAKE_PROFIT_BPS", strategy.get("take_profit_bps", 40)),
         stop_loss_bps=_env_int("STOP_LOSS_BPS", strategy.get("stop_loss_bps", 25)),
         time_stop_min=_env_int("TIME_STOP_MIN", strategy.get("time_stop_min", 10)),
+        atr_window=_env_int("ATR_WINDOW", strategy.get("atr_window", 14)),
     )
 
     execution = raw.get("execution", {})

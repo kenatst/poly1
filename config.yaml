@@ -30,6 +30,7 @@ strategy:
   take_profit_bps: 40
   stop_loss_bps: 25
   time_stop_min: 10
+  atr_window: 14
 
 execution:
   order_size_default: 10.0

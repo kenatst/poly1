@@ -1,9 +1,13 @@
+import json
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import requests
+import websockets
+from websockets.sync.client import connect
 
 
 @dataclass
@@ -36,15 +40,22 @@ class PolymarketClient:
     def __init__(
         self,
         rest_base_url: str,
+        ws_url: Optional[str] = None,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         api_passphrase: Optional[str] = None,
     ) -> None:
         self.rest_base_url = rest_base_url.rstrip("/")
+        self.ws_url = ws_url
         self.api_key = api_key
         self.api_secret = api_secret
         self.api_passphrase = api_passphrase
         self.session = requests.Session()
+        self._ws = None
+        self._ws_thread: Optional[threading.Thread] = None
+        self._on_trade: Optional[Callable[[TradePrint], None]] = None
+        self._on_orderbook: Optional[Callable[[OrderBook], None]] = None
+        self._running = False
 
     def _headers(self) -> Dict[str, str]:
         headers: Dict[str, str] = {"Accept": "application/json"}
@@ -113,3 +124,71 @@ class PolymarketClient:
         while True:
             yield self.get_recent_trades(market_id)
             time.sleep(sleep_sec)
+
+    def start_ws(
+        self,
+        market_ids: List[str],
+        on_trade: Optional[Callable[[TradePrint], None]] = None,
+        on_orderbook: Optional[Callable[[OrderBook], None]] = None,
+    ) -> None:
+        if not self.ws_url:
+            raise ValueError("WS URL not configured")
+        self._on_trade = on_trade
+        self._on_orderbook = on_orderbook
+        self._running = True
+        self._ws_thread = threading.Thread(target=self._ws_loop, args=(market_ids,), daemon=True)
+        self._ws_thread.start()
+
+    def stop_ws(self) -> None:
+        self._running = False
+        if self._ws_thread:
+            self._ws_thread.join(timeout=5)
+
+    def _ws_loop(self, market_ids: List[str]) -> None:
+        while self._running:
+            try:
+                with connect(self.ws_url) as ws:
+                    self._ws = ws
+                    # Polymarket CLOB WS subscription format
+                    subscribe_msg = {
+                        "type": "subscribe",
+                        "market_ids": market_ids,
+                        "channels": ["trades", "orderbook"],
+                    }
+                    ws.send(json.dumps(subscribe_msg))
+
+                    while self._running:
+                        message = ws.recv()
+                        self._handle_ws_message(json.loads(message))
+            except Exception as e:
+                print(f"WS error: {e}. Retrying in 5s...")
+                time.sleep(5)
+
+    def _handle_ws_message(self, data: Dict[str, Any]) -> None:
+        msg_type = data.get("type")
+        market_id = data.get("market_id")
+        if not market_id:
+            return
+
+        if msg_type == "trades" and self._on_trade:
+            for item in data.get("trades", []):
+                trade = TradePrint(
+                    market_id=market_id,
+                    trade_id=str(item.get("id")),
+                    price=float(item.get("price")),
+                    size=float(item.get("size")),
+                    side=item.get("side", ""),
+                    timestamp=datetime.fromtimestamp(item.get("timestamp"), tz=timezone.utc)
+                    if item.get("timestamp")
+                    else datetime.now(timezone.utc),
+                )
+                self._on_trade(trade)
+
+        elif msg_type == "orderbook" and self._on_orderbook:
+            ob = OrderBook(
+                market_id=market_id,
+                bids=data.get("bids", []),
+                asks=data.get("asks", []),
+                timestamp=datetime.now(timezone.utc),
+            )
+            self._on_orderbook(ob)

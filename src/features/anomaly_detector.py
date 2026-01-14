@@ -37,6 +37,7 @@ class AnomalyDetector:
         self.trade_history: Dict[str, Deque[Trade]] = defaultdict(deque)
         self.mid_history: Dict[str, Deque[Tuple[datetime, float]]] = defaultdict(deque)
         self.spread_history: Dict[str, Deque[Tuple[datetime, float]]] = defaultdict(deque)
+        self.last_orderbook: Dict[str, OrderBookView] = {}
 
     def _trim(self, market: str, now: datetime) -> None:
         cutoff = now - timedelta(seconds=self.baseline_window_sec)
@@ -54,8 +55,10 @@ class AnomalyDetector:
         now = datetime.now(timezone.utc)
         for trade in trades:
             self.trade_history[market].append(trade)
-        self.mid_history[market].append((now, orderbook.mid))
-        self.spread_history[market].append((now, orderbook.spread))
+        if orderbook:
+            self.last_orderbook[market] = orderbook
+            self.mid_history[market].append((now, orderbook.mid))
+            self.spread_history[market].append((now, orderbook.spread))
         self._trim(market, now)
 
     def _window_trades(self, market: str, window_sec: int) -> List[Trade]:
