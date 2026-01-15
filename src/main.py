@@ -157,11 +157,42 @@ def run() -> None:
     if not hasattr(detector, "last_orderbook"):
         detector.last_orderbook = {}
 
-    client.start_ws(markets, on_trade=on_trade, on_orderbook=on_orderbook)
+    # Try WebSocket if configured, otherwise fall back to REST polling
+    use_ws = bool(config.polymarket.ws_url)
+    if use_ws:
+        try:
+            client.start_ws(markets, on_trade=on_trade, on_orderbook=on_orderbook)
+            print(f"[INFO] WebSocket started for {len(markets)} markets")
+        except Exception as e:
+            print(f"[WARN] WebSocket failed to start: {e}. Falling back to REST polling.")
+            use_ws = False
 
     try:
         while True:
             for market in markets:
+                # REST polling for data (fallback or primary if WS not used)
+                if not use_ws or not detector.last_orderbook.get(market):
+                    try:
+                        orderbook_payload = client.get_orderbook(market)
+                        orderbook_view = _parse_orderbook({"bids": orderbook_payload.bids, "asks": orderbook_payload.asks})
+                        detector.last_orderbook[market] = orderbook_view
+                        trades = client.get_recent_trades(market, limit=50)
+                        trade_models = [
+                            Trade(
+                                market=market,
+                                trade_id=t.trade_id,
+                                price=t.price,
+                                size=t.size,
+                                side=t.side,
+                                timestamp=t.timestamp,
+                            )
+                            for t in trades
+                        ]
+                        detector.update(market, trade_models, orderbook_view)
+                    except Exception as e:
+                        print(f"[WARN] REST fetch failed for {market}: {e}")
+                        continue
+
                 orderbook_view = detector.last_orderbook.get(market)
                 if not orderbook_view:
                     continue
@@ -221,7 +252,8 @@ def run() -> None:
                 alerter.flush()
             time.sleep(config.data_poll_sec)
     finally:
-        client.stop_ws()
+        if use_ws:
+            client.stop_ws()
 
 
 if __name__ == "__main__":
